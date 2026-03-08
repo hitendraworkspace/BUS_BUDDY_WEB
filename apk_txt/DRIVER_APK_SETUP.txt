@@ -1,0 +1,655 @@
+================================================================================
+DRIVER APK - COMPLETE SETUP GUIDE FOR FLUTTER
+================================================================================
+
+This document contains all information needed to build the Driver Flutter APK
+including Supabase tables, configuration, dependencies, and features.
+
+================================================================================
+1. SUPABASE CONFIGURATION
+================================================================================
+
+SUPABASE URL:
+https://jqgbdzcqfrbuesxpohbq.supabase.co
+
+SUPABASE ANON KEY (Public):
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxZ2JkemNxZnJidWVzeHBvaGJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MTA1NDMsImV4cCI6MjA4ODQ4NjU0M30.7dJ55upWkIElbPFa8L7neVObqqSBMZWE_u5Qepbhyvk
+
+NOTE: Get your Service Role Key from Supabase Dashboard > Settings > API
+      (Keep it secret - only for server-side operations if needed)
+
+REALTIME ENABLED: Yes (for route updates)
+
+================================================================================
+2. NEW SUPABASE TABLES TO CREATE
+================================================================================
+
+Run these SQL commands in Supabase SQL Editor:
+
+-- ============================================================================
+-- TABLE: driver_auth
+-- ============================================================================
+-- Stores driver login credentials (or use Supabase Auth)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS driver_auth (
+    id BIGSERIAL PRIMARY KEY,
+    driver_id BIGINT NOT NULL UNIQUE,
+    email VARCHAR(255) UNIQUE,
+    phone VARCHAR(20) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    status VARCHAR(20) CHECK (status IN ('active', 'inactive')) DEFAULT 'active',
+    last_login TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_driver_auth_driver_id 
+        FOREIGN KEY (driver_id) 
+        REFERENCES drivers(id) 
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_driver_auth_phone ON driver_auth(phone);
+CREATE INDEX IF NOT EXISTS idx_driver_auth_email ON driver_auth(email);
+CREATE INDEX IF NOT EXISTS idx_driver_auth_status ON driver_auth(status);
+
+DROP TRIGGER IF EXISTS update_driver_auth_updated_at ON driver_auth;
+CREATE TRIGGER update_driver_auth_updated_at 
+    BEFORE UPDATE ON driver_auth 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- TABLE: trips
+-- ============================================================================
+-- Stores trip information (start/end times, route, driver)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS trips (
+    id BIGSERIAL PRIMARY KEY,
+    driver_id BIGINT NOT NULL,
+    device_id VARCHAR(50) NOT NULL,
+    route_id BIGINT,
+    trip_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    start_time TIMESTAMP WITH TIME ZONE,
+    end_time TIMESTAMP WITH TIME ZONE,
+    start_latitude NUMERIC(10, 7),
+    start_longitude NUMERIC(10, 7),
+    end_latitude NUMERIC(10, 7),
+    end_longitude NUMERIC(10, 7),
+    status VARCHAR(20) CHECK (status IN ('scheduled', 'in_progress', 'completed', 'cancelled')) DEFAULT 'scheduled',
+    total_distance_km NUMERIC(8, 2) DEFAULT 0,
+    total_duration_minutes INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_trips_driver_id 
+        FOREIGN KEY (driver_id) 
+        REFERENCES drivers(id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_trips_device_id 
+        FOREIGN KEY (device_id) 
+        REFERENCES bus_routes(device_id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_trips_route_id 
+        FOREIGN KEY (route_id) 
+        REFERENCES bus_routes(id) 
+        ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trips_driver_id ON trips(driver_id);
+CREATE INDEX IF NOT EXISTS idx_trips_device_id ON trips(device_id);
+CREATE INDEX IF NOT EXISTS idx_trips_route_id ON trips(route_id);
+CREATE INDEX IF NOT EXISTS idx_trips_status ON trips(status);
+CREATE INDEX IF NOT EXISTS idx_trips_trip_date ON trips(trip_date DESC);
+CREATE INDEX IF NOT EXISTS idx_trips_driver_date ON trips(driver_id, trip_date DESC);
+
+DROP TRIGGER IF EXISTS update_trips_updated_at ON trips;
+CREATE TRIGGER update_trips_updated_at 
+    BEFORE UPDATE ON trips 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- TABLE: trip_checkpoints (Optional - for detailed route tracking)
+-- ============================================================================
+-- Stores checkpoints during trip (for route verification)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS trip_checkpoints (
+    id BIGSERIAL PRIMARY KEY,
+    trip_id BIGINT NOT NULL,
+    checkpoint_name VARCHAR(255),
+    latitude NUMERIC(10, 7) NOT NULL,
+    longitude NUMERIC(10, 7) NOT NULL,
+    checkpoint_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    checkpoint_order INTEGER NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_trip_checkpoints_trip_id 
+        FOREIGN KEY (trip_id) 
+        REFERENCES trips(id) 
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trip_checkpoints_trip_id ON trip_checkpoints(trip_id);
+CREATE INDEX IF NOT EXISTS idx_trip_checkpoints_trip_order ON trip_checkpoints(trip_id, checkpoint_order);
+
+-- ============================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES FOR DRIVER TABLES
+-- ============================================================================
+
+ALTER TABLE driver_auth ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trips ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trip_checkpoints ENABLE ROW LEVEL SECURITY;
+
+-- Drivers can read their own auth data
+DROP POLICY IF EXISTS "Drivers can read own auth" ON driver_auth;
+CREATE POLICY "Drivers can read own auth" 
+    ON driver_auth FOR SELECT 
+    USING (true); -- Will filter by driver_id in app
+
+-- Drivers can read their own trips
+DROP POLICY IF EXISTS "Drivers can read own trips" ON trips;
+CREATE POLICY "Drivers can read own trips" 
+    ON trips FOR SELECT 
+    USING (true); -- Will filter by driver_id in app
+
+-- Drivers can insert/update their own trips
+DROP POLICY IF EXISTS "Drivers can insert own trips" ON trips;
+CREATE POLICY "Drivers can insert own trips" 
+    ON trips FOR INSERT 
+    WITH CHECK (true); -- Will validate driver_id in app
+
+DROP POLICY IF EXISTS "Drivers can update own trips" ON trips;
+CREATE POLICY "Drivers can update own trips" 
+    ON trips FOR UPDATE 
+    USING (true); -- Will validate driver_id in app
+
+-- Drivers can insert checkpoints for their trips
+DROP POLICY IF EXISTS "Drivers can insert checkpoints" ON trip_checkpoints;
+CREATE POLICY "Drivers can insert checkpoints" 
+    ON trip_checkpoints FOR INSERT 
+    WITH CHECK (true);
+
+-- Public read access for trip checkpoints (for route display)
+DROP POLICY IF EXISTS "Public read access on trip_checkpoints" ON trip_checkpoints;
+CREATE POLICY "Public read access on trip_checkpoints" 
+    ON trip_checkpoints FOR SELECT 
+    USING (true);
+
+================================================================================
+3. EXISTING TABLES TO USE (Already in Database)
+================================================================================
+
+3.1 drivers
+   - Columns: id, name, phone, licence_expiry, device_id, status, created_at
+   - Usage: Driver information and authentication
+
+3.2 bus_routes
+   - Columns: id, route_name, bus_number, start_point, end_point, device_id,
+              total_stops, estimated_time, status, start_coordinates, 
+              end_coordinates, created_at, updated_at
+   - Usage: Display route information to driver
+
+3.3 gps_data
+   - Columns: id, device_id, latitude, longitude, speed, gps_time, created_at
+   - Usage: Track current location (optional - for route verification)
+
+================================================================================
+4. FLUTTER DEPENDENCIES (pubspec.yaml)
+================================================================================
+
+Add these dependencies to your Flutter project:
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Supabase
+  supabase_flutter: ^2.5.0
+  
+  # State Management
+  provider: ^6.1.1
+  # OR
+  # riverpod: ^2.4.9
+  
+  # HTTP & Networking
+  http: ^1.1.0
+  
+  # Maps & Location
+  google_maps_flutter: ^2.5.0
+  # OR
+  # flutter_map: ^6.1.0  # For OpenStreetMap (free alternative)
+  geolocator: ^10.1.0
+  geocoding: ^2.1.1
+  
+  # UI Components
+  cached_network_image: ^3.3.0
+  shimmer: ^3.0.0
+  flutter_svg: ^2.0.9
+  
+  # Utilities
+  shared_preferences: ^2.2.2
+  intl: ^0.18.1
+  uuid: ^4.2.1
+  
+  # Permissions
+  permission_handler: ^11.1.0
+  
+  # Date & Time
+  timeago: ^3.6.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+================================================================================
+5. FLUTTER CONFIGURATION FILES
+================================================================================
+
+5.1 android/app/build.gradle
+   - minSdkVersion: 21
+   - targetSdkVersion: 34
+   - Add Google Maps API key in AndroidManifest.xml
+
+5.2 android/app/src/main/AndroidManifest.xml
+   Add permissions:
+   <uses-permission android:name="android.permission.INTERNET"/>
+   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+   <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+
+5.3 ios/Runner/Info.plist
+   Add:
+   <key>NSLocationWhenInUseUsageDescription</key>
+   <string>We need your location to track your route</string>
+   <key>NSLocationAlwaysUsageDescription</key>
+   <string>We need your location to track your route</string>
+   <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+   <string>We need your location to track your route</string>
+
+================================================================================
+6. SUPABASE CLIENT SETUP (Flutter)
+================================================================================
+
+Create lib/services/supabase_service.dart:
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class SupabaseService {
+  static const String supabaseUrl = 'https://jqgbdzcqfrbuesxpohbq.supabase.co';
+  static const String supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxZ2JkemNxZnJidWVzeHBvaGJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MTA1NDMsImV4cCI6MjA4ODQ4NjU0M30.7dJ55upWkIElbPFa8L7neVObqqSBMZWE_u5Qepbhyvk';
+  
+  static Future<void> initialize() async {
+    await Supabase.initialize(
+      url: supabaseUrl,
+      anonKey: supabaseAnonKey,
+    );
+  }
+  
+  static SupabaseClient get client => Supabase.instance.client;
+}
+
+Initialize in main.dart:
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SupabaseService.initialize();
+  runApp(MyApp());
+}
+
+================================================================================
+7. FEATURES TO IMPLEMENT
+================================================================================
+
+7.1 DRIVER LOGIN
+   - Phone/Email + Password authentication
+   - Store credentials securely
+   - Session management
+   - Auto-login if session exists
+
+   Database Query:
+   SELECT da.*, d.* 
+   FROM driver_auth da
+   INNER JOIN drivers d ON da.driver_id = d.id
+   WHERE (da.phone = ? OR da.email = ?) 
+     AND da.password_hash = ? 
+     AND da.status = 'active'
+     AND d.status = 'active'
+
+7.2 DRIVER SEES ROUTE
+   - Display assigned route information
+   - Show route name, bus number
+   - Display start and end points
+   - Show route on map (optional)
+   - Display route stops/stations
+   - Show estimated time
+
+   Database Query:
+   SELECT br.* 
+   FROM bus_routes br
+   INNER JOIN drivers d ON br.device_id = d.device_id
+   WHERE d.id = ? AND br.status = 'active'
+
+   Display Route Stops (if bus_stops table exists):
+   SELECT * FROM bus_stops 
+   WHERE route_id = ? 
+   ORDER BY stop_order ASC
+
+7.3 START TRIP
+   - Button to start trip
+   - Record start time
+   - Record start location (GPS)
+   - Create trip record in database
+   - Update trip status to 'in_progress'
+   - Show confirmation
+
+   Database Insert:
+   INSERT INTO trips (
+     driver_id, 
+     device_id, 
+     route_id, 
+     trip_date, 
+     start_time, 
+     start_latitude, 
+     start_longitude, 
+     status
+   ) VALUES (?, ?, ?, CURRENT_DATE, NOW(), ?, ?, 'in_progress')
+   RETURNING id
+
+   After Insert:
+   - Store trip_id in app state
+   - Enable "End Trip" button
+   - Disable "Start Trip" button
+   - Start location tracking (optional)
+
+7.4 END TRIP
+   - Button to end trip
+   - Record end time
+   - Record end location (GPS)
+   - Calculate total duration
+   - Calculate total distance (if tracking enabled)
+   - Update trip status to 'completed'
+   - Show trip summary
+
+   Database Update:
+   UPDATE trips 
+   SET 
+     end_time = NOW(),
+     end_latitude = ?,
+     end_longitude = ?,
+     total_duration_minutes = EXTRACT(EPOCH FROM (NOW() - start_time)) / 60,
+     status = 'completed',
+     updated_at = NOW()
+   WHERE id = ? AND driver_id = ?
+   RETURNING *
+
+   Trip Summary Calculation:
+   - Duration: end_time - start_time
+   - Distance: Calculate from GPS checkpoints (if tracked)
+   - Average Speed: distance / duration
+
+================================================================================
+8. DATABASE QUERIES SUMMARY
+================================================================================
+
+8.1 Driver Login
+   SELECT da.id, da.driver_id, da.phone, da.email, 
+          d.name, d.device_id, d.status as driver_status
+   FROM driver_auth da
+   INNER JOIN drivers d ON da.driver_id = d.id
+   WHERE (da.phone = ? OR da.email = ?) 
+     AND da.password_hash = ? 
+     AND da.status = 'active'
+     AND d.status = 'active'
+
+8.2 Get Driver's Assigned Route
+   SELECT br.* 
+   FROM bus_routes br
+   INNER JOIN drivers d ON br.device_id = d.device_id
+   WHERE d.id = ? AND br.status = 'active'
+   LIMIT 1
+
+8.3 Get Active Trip
+   SELECT * FROM trips 
+   WHERE driver_id = ? 
+     AND status = 'in_progress' 
+     AND trip_date = CURRENT_DATE
+   ORDER BY start_time DESC 
+   LIMIT 1
+
+8.4 Get Today's Trips
+   SELECT * FROM trips 
+   WHERE driver_id = ? 
+     AND trip_date = CURRENT_DATE
+   ORDER BY start_time DESC
+
+8.5 Get Trip History
+   SELECT * FROM trips 
+   WHERE driver_id = ? 
+   ORDER BY trip_date DESC, start_time DESC 
+   LIMIT 50
+
+8.6 Start Trip
+   INSERT INTO trips (
+     driver_id, 
+     device_id, 
+     route_id, 
+     trip_date, 
+     start_time, 
+     start_latitude, 
+     start_longitude, 
+     status
+   ) 
+   SELECT 
+     d.id,
+     d.device_id,
+     br.id,
+     CURRENT_DATE,
+     NOW(),
+     ?,
+     ?,
+     'in_progress'
+   FROM drivers d
+   LEFT JOIN bus_routes br ON d.device_id = br.device_id
+   WHERE d.id = ?
+   RETURNING *
+
+8.7 End Trip
+   UPDATE trips 
+   SET 
+     end_time = NOW(),
+     end_latitude = ?,
+     end_longitude = ?,
+     total_duration_minutes = EXTRACT(EPOCH FROM (NOW() - start_time)) / 60,
+     status = 'completed',
+     updated_at = NOW()
+   WHERE id = ? AND driver_id = ? AND status = 'in_progress'
+   RETURNING *
+
+================================================================================
+9. SCREEN STRUCTURE
+================================================================================
+
+9.1 Login Screen
+   - Phone/Email input
+   - Password input
+   - Login button
+   - Remember me checkbox
+
+9.2 Home/Dashboard Screen
+   - Route information card
+     * Route name
+     * Bus number
+     * Start point → End point
+     * Estimated time
+   - Start Trip button (if no active trip)
+   - Active Trip card (if trip in progress)
+     * Trip started at: [time]
+     * Duration: [X minutes]
+     * End Trip button
+   - Today's trips summary
+   - Quick stats
+
+9.3 Route Details Screen
+   - Full route information
+   - Route map (optional)
+   - List of stops/stations
+   - Route instructions
+
+9.4 Trip History Screen
+   - List of past trips
+   - Filter by date
+   - Trip details:
+     * Date & Time
+     * Duration
+     * Distance (if available)
+     * Status
+
+9.5 Profile Screen
+   - Driver name
+   - Phone number
+   - License expiry date
+   - Assigned bus/route
+   - Logout button
+
+================================================================================
+10. TRIP MANAGEMENT LOGIC
+================================================================================
+
+10.1 Check for Active Trip on App Start
+   - Query database for active trip
+   - If found, show "End Trip" button
+   - If not found, show "Start Trip" button
+   - Display trip information if active
+
+10.2 Start Trip Flow
+   1. Get current GPS location
+   2. Validate location (not null)
+   3. Get driver's route information
+   4. Insert trip record
+   5. Store trip_id locally
+   6. Update UI to show active trip
+   7. Show success message
+
+10.3 End Trip Flow
+   1. Get current GPS location
+   2. Get active trip_id from local storage
+   3. Calculate duration
+   4. Update trip record
+   5. Clear trip_id from local storage
+   6. Update UI to show "Start Trip" button
+   7. Show trip summary
+   8. Optionally navigate to trip history
+
+10.4 Trip Validation
+   - Prevent starting multiple trips on same day
+   - Validate driver is assigned to route
+   - Check GPS permissions before starting
+   - Validate trip duration (minimum 1 minute)
+
+================================================================================
+11. LOCATION TRACKING (Optional Enhancement)
+================================================================================
+
+If you want to track route during trip:
+
+11.1 Periodic Location Updates
+   - Get location every 30 seconds during active trip
+   - Store checkpoints in trip_checkpoints table
+   - Calculate distance traveled
+
+11.2 Insert Checkpoint
+   INSERT INTO trip_checkpoints (
+     trip_id,
+     checkpoint_name,
+     latitude,
+     longitude,
+     checkpoint_time,
+     checkpoint_order
+   ) VALUES (?, ?, ?, ?, NOW(), ?)
+
+11.3 Calculate Distance
+   - Sum distances between consecutive checkpoints
+   - Update trip.total_distance_km
+
+================================================================================
+12. ERROR HANDLING
+================================================================================
+
+- Handle network errors gracefully
+- Show user-friendly error messages
+- Retry failed operations
+- Validate GPS availability before starting trip
+- Handle cases where driver has no assigned route
+- Handle cases where trip already exists
+
+================================================================================
+13. SECURITY CONSIDERATIONS
+================================================================================
+
+- Never store Supabase service role key in app
+- Use Supabase Auth for secure authentication (recommended)
+- Hash passwords properly if using custom auth
+- Validate driver_id matches logged-in driver
+- Implement token refresh for sessions
+- Use HTTPS for all API calls
+- Validate all user inputs
+- Prevent trip manipulation (only driver can start/end own trips)
+
+================================================================================
+14. TESTING CHECKLIST
+================================================================================
+
+- [ ] Login with valid credentials
+- [ ] Login with invalid credentials
+- [ ] View assigned route
+- [ ] Start trip successfully
+- [ ] Cannot start multiple trips
+- [ ] End trip successfully
+- [ ] Trip duration calculated correctly
+- [ ] View trip history
+- [ ] GPS location captured on start/end
+- [ ] App works offline (cached route data)
+- [ ] Session persistence (auto-login)
+- [ ] Handle no route assigned scenario
+- [ ] Handle GPS unavailable scenario
+
+================================================================================
+15. BUILD CONFIGURATION FOR APK
+================================================================================
+
+15.1 Android APK Build
+   flutter build apk --release
+   
+   Output: build/app/outputs/flutter-apk/app-release.apk
+
+15.2 Android App Bundle (for Play Store)
+   flutter build appbundle --release
+   
+   Output: build/app/outputs/bundle/release/app-release.aab
+
+15.3 Signing Configuration
+   - Create keystore file
+   - Configure in android/app/build.gradle
+   - Add key.properties file (DO NOT commit to git)
+
+================================================================================
+16. PWA CONSIDERATIONS (If building as PWA)
+================================================================================
+
+Since the image mentions "simple PWA page", you can also build this as a PWA:
+
+16.1 PWA Configuration
+   - Add web manifest
+   - Add service worker
+   - Enable offline support
+   - Add app icons
+   - Configure install prompt
+
+16.2 Build PWA
+   flutter build web --release
+   
+   Deploy to hosting service (Firebase Hosting, Netlify, etc.)
+
+================================================================================
+END OF DRIVER APK SETUP GUIDE
+================================================================================

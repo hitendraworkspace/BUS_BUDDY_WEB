@@ -1,0 +1,578 @@
+================================================================================
+PARENT APK - COMPLETE SETUP GUIDE FOR FLUTTER
+================================================================================
+
+This document contains all information needed to build the Parent Flutter APK
+including Supabase tables, configuration, dependencies, and features.
+
+================================================================================
+1. SUPABASE CONFIGURATION
+================================================================================
+
+SUPABASE URL:
+https://jqgbdzcqfrbuesxpohbq.supabase.co
+
+SUPABASE ANON KEY (Public):
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxZ2JkemNxZnJidWVzeHBvaGJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MTA1NDMsImV4cCI6MjA4ODQ4NjU0M30.7dJ55upWkIElbPFa8L7neVObqqSBMZWE_u5Qepbhyvk
+
+NOTE: Get your Service Role Key from Supabase Dashboard > Settings > API
+      (Keep it secret - only for server-side operations if needed)
+
+REALTIME ENABLED: Yes (for live GPS tracking)
+
+================================================================================
+2. NEW SUPABASE TABLES TO CREATE
+================================================================================
+
+Run these SQL commands in Supabase SQL Editor:
+
+-- ============================================================================
+-- TABLE: parents
+-- ============================================================================
+-- Stores parent user information and authentication
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS parents (
+    id BIGSERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255) NOT NULL,
+    phone VARCHAR(20) NOT NULL,
+    student_name VARCHAR(255) NOT NULL,
+    student_roll_number VARCHAR(50),
+    route_id BIGINT,
+    device_id VARCHAR(50),
+    status VARCHAR(20) CHECK (status IN ('active', 'inactive')) DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_parents_route_id 
+        FOREIGN KEY (route_id) 
+        REFERENCES bus_routes(id) 
+        ON DELETE SET NULL,
+    CONSTRAINT fk_parents_device_id 
+        FOREIGN KEY (device_id) 
+        REFERENCES bus_routes(device_id) 
+        ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_parents_email ON parents(email);
+CREATE INDEX IF NOT EXISTS idx_parents_route_id ON parents(route_id);
+CREATE INDEX IF NOT EXISTS idx_parents_device_id ON parents(device_id);
+CREATE INDEX IF NOT EXISTS idx_parents_status ON parents(status);
+
+DROP TRIGGER IF EXISTS update_parents_updated_at ON parents;
+CREATE TRIGGER update_parents_updated_at 
+    BEFORE UPDATE ON parents 
+    FOR EACH ROW 
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- ============================================================================
+-- TABLE: parent_notifications
+-- ============================================================================
+-- Stores notifications for parents (bus arrival, delays, alerts)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS parent_notifications (
+    id BIGSERIAL PRIMARY KEY,
+    parent_id BIGINT NOT NULL,
+    device_id VARCHAR(50),
+    route_id BIGINT,
+    type VARCHAR(50) NOT NULL CHECK (type IN ('bus_arrival', 'delay', 'alert', 'eta_update', 'route_change')),
+    title VARCHAR(255) NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_parent_notifications_parent_id 
+        FOREIGN KEY (parent_id) 
+        REFERENCES parents(id) 
+        ON DELETE CASCADE,
+    CONSTRAINT fk_parent_notifications_device_id 
+        FOREIGN KEY (device_id) 
+        REFERENCES bus_routes(device_id) 
+        ON DELETE SET NULL,
+    CONSTRAINT fk_parent_notifications_route_id 
+        FOREIGN KEY (route_id) 
+        REFERENCES bus_routes(id) 
+        ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_parent_notifications_parent_id ON parent_notifications(parent_id);
+CREATE INDEX IF NOT EXISTS idx_parent_notifications_is_read ON parent_notifications(is_read);
+CREATE INDEX IF NOT EXISTS idx_parent_notifications_created_at ON parent_notifications(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_parent_notifications_parent_read ON parent_notifications(parent_id, is_read);
+
+-- ============================================================================
+-- TABLE: bus_stops
+-- ============================================================================
+-- Stores bus stop information for ETA calculation
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS bus_stops (
+    id BIGSERIAL PRIMARY KEY,
+    route_id BIGINT NOT NULL,
+    stop_name VARCHAR(255) NOT NULL,
+    stop_order INTEGER NOT NULL,
+    latitude NUMERIC(10, 7) NOT NULL,
+    longitude NUMERIC(10, 7) NOT NULL,
+    estimated_time_from_start INTEGER, -- minutes from route start
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT fk_bus_stops_route_id 
+        FOREIGN KEY (route_id) 
+        REFERENCES bus_routes(id) 
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bus_stops_route_id ON bus_stops(route_id);
+CREATE INDEX IF NOT EXISTS idx_bus_stops_route_order ON bus_stops(route_id, stop_order);
+
+-- ============================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES FOR PARENT TABLES
+-- ============================================================================
+
+ALTER TABLE parents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE parent_notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bus_stops ENABLE ROW LEVEL SECURITY;
+
+-- Parents can only read their own data
+DROP POLICY IF EXISTS "Parents can read own data" ON parents;
+CREATE POLICY "Parents can read own data" 
+    ON parents FOR SELECT 
+    USING (auth.uid()::text = id::text OR true); -- Adjust based on your auth setup
+
+-- Parents can only read their own notifications
+DROP POLICY IF EXISTS "Parents can read own notifications" ON parent_notifications;
+CREATE POLICY "Parents can read own notifications" 
+    ON parent_notifications FOR SELECT 
+    USING (true); -- Will filter by parent_id in app
+
+-- Public read access for bus stops (needed for route display)
+DROP POLICY IF EXISTS "Public read access on bus_stops" ON bus_stops;
+CREATE POLICY "Public read access on bus_stops" 
+    ON bus_stops FOR SELECT 
+    USING (true);
+
+-- Allow parents to update notification read status
+DROP POLICY IF EXISTS "Parents can update own notifications" ON parent_notifications;
+CREATE POLICY "Parents can update own notifications" 
+    ON parent_notifications FOR UPDATE 
+    USING (true); -- Will filter by parent_id in app
+
+================================================================================
+3. EXISTING TABLES TO USE (Already in Database)
+================================================================================
+
+3.1 bus_routes
+   - Columns: id, route_name, bus_number, start_point, end_point, device_id,
+              total_stops, estimated_time, status, start_coordinates, 
+              end_coordinates, created_at, updated_at
+   - Usage: Get route information for parent's assigned route
+
+3.2 gps_data
+   - Columns: id, device_id, latitude, longitude, speed, gps_time, created_at
+   - Usage: Real-time bus location tracking
+   - Real-time: Subscribe to INSERT events for live updates
+
+3.3 drivers
+   - Columns: id, name, phone, licence_expiry, device_id, status, created_at
+   - Usage: Display driver information for assigned route
+
+================================================================================
+4. FLUTTER DEPENDENCIES (pubspec.yaml)
+================================================================================
+
+Add these dependencies to your Flutter project:
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # Supabase
+  supabase_flutter: ^2.5.0
+  
+  # State Management
+  provider: ^6.1.1
+  # OR
+  # riverpod: ^2.4.9
+  
+  # HTTP & Networking
+  http: ^1.1.0
+  
+  # Maps & Location
+  google_maps_flutter: ^2.5.0
+  # OR
+  # flutter_map: ^6.1.0  # For OpenStreetMap (free alternative)
+  geolocator: ^10.1.0
+  geocoding: ^2.1.1
+  
+  # UI Components
+  flutter_local_notifications: ^16.3.0
+  cached_network_image: ^3.3.0
+  shimmer: ^3.0.0
+  
+  # Utilities
+  shared_preferences: ^2.2.2
+  intl: ^0.18.1
+  uuid: ^4.2.1
+  
+  # Permissions
+  permission_handler: ^11.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+================================================================================
+5. FLUTTER CONFIGURATION FILES
+================================================================================
+
+5.1 android/app/build.gradle
+   - minSdkVersion: 21
+   - targetSdkVersion: 34
+   - Add Google Maps API key in AndroidManifest.xml
+
+5.2 android/app/src/main/AndroidManifest.xml
+   Add permissions:
+   <uses-permission android:name="android.permission.INTERNET"/>
+   <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+   <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+   <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+5.3 ios/Runner/Info.plist
+   Add:
+   <key>NSLocationWhenInUseUsageDescription</key>
+   <string>We need your location to show bus location</string>
+   <key>NSLocationAlwaysUsageDescription</key>
+   <string>We need your location to show bus location</string>
+
+================================================================================
+6. SUPABASE CLIENT SETUP (Flutter)
+================================================================================
+
+Create lib/services/supabase_service.dart:
+
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+class SupabaseService {
+  static const String supabaseUrl = 'https://jqgbdzcqfrbuesxpohbq.supabase.co';
+  static const String supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpxZ2JkemNxZnJidWVzeHBvaGJxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI5MTA1NDMsImV4cCI6MjA4ODQ4NjU0M30.7dJ55upWkIElbPFa8L7neVObqqSBMZWE_u5Qepbhyvk';
+  
+  static Future<void> initialize() async {
+    await Supabase.initialize(
+      url: supabaseUrl,
+      anonKey: supabaseAnonKey,
+    );
+  }
+  
+  static SupabaseClient get client => Supabase.instance.client;
+}
+
+Initialize in main.dart:
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SupabaseService.initialize();
+  runApp(MyApp());
+}
+
+================================================================================
+7. FEATURES TO IMPLEMENT
+================================================================================
+
+7.1 PARENT LOGIN
+   - Email/Password authentication
+   - Store credentials securely (use Supabase Auth or custom)
+   - Session management
+   - Auto-login if session exists
+
+   Database Query:
+   SELECT * FROM parents WHERE email = ? AND password_hash = ?
+   (OR use Supabase Auth for better security)
+
+7.2 PARENT SEES BUS LIVE LOCATION
+   - Real-time GPS tracking using Supabase Realtime
+   - Display bus on map (Google Maps or OpenStreetMap)
+   - Update location every 5-10 seconds
+   - Show bus marker with route information
+   - Show route path on map
+
+   Real-time Subscription:
+   supabase
+     .channel('gps_data-feed')
+     .onPostgresChanges(
+       event: PostgresChangeEvent.insert,
+       schema: 'public',
+       table: 'gps_data',
+       filter: PostgresChangeFilter(
+         type: PostgresChangeFilterType.eq,
+         column: 'device_id',
+         value: parentDeviceId,
+       ),
+       callback: (payload) {
+         // Update bus location on map
+       },
+     )
+     .subscribe();
+
+   Latest GPS Query:
+   SELECT * FROM gps_data 
+   WHERE device_id = ? 
+   ORDER BY gps_time DESC 
+   LIMIT 1
+
+7.3 ETA ARRIVAL TIME
+   - Calculate estimated time to reach parent's stop
+   - Use current bus location and route stops
+   - Consider traffic and speed
+   - Display countdown timer
+   - Update every 30 seconds
+
+   Algorithm:
+   1. Get current bus GPS location
+   2. Get parent's assigned stop from bus_stops table
+   3. Calculate distance from bus to stop
+   4. Get current bus speed from gps_data
+   5. Calculate ETA = distance / speed
+   6. Display formatted time (e.g., "5 minutes", "Arriving now")
+
+   Query for stops:
+   SELECT * FROM bus_stops 
+   WHERE route_id = ? 
+   ORDER BY stop_order
+
+7.4 NOTIFICATIONS (Simple)
+   - Push notifications for:
+     * Bus arrival (5 minutes before)
+     * Delays
+     * Route changes
+     * Alerts
+   - In-app notification list
+   - Mark as read functionality
+   - Badge count for unread notifications
+
+   Query for notifications:
+   SELECT * FROM parent_notifications 
+   WHERE parent_id = ? 
+   ORDER BY created_at DESC 
+   LIMIT 50
+
+   Mark as read:
+   UPDATE parent_notifications 
+   SET is_read = true 
+   WHERE id = ? AND parent_id = ?
+
+   Unread count:
+   SELECT COUNT(*) FROM parent_notifications 
+   WHERE parent_id = ? AND is_read = false
+
+================================================================================
+8. DATABASE QUERIES SUMMARY
+================================================================================
+
+8.1 Login
+   SELECT id, email, full_name, phone, student_name, route_id, device_id 
+   FROM parents 
+   WHERE email = ? AND password_hash = ? AND status = 'active'
+
+8.2 Get Parent's Route
+   SELECT br.* 
+   FROM bus_routes br
+   INNER JOIN parents p ON br.id = p.route_id
+   WHERE p.id = ?
+
+8.3 Get Latest Bus Location
+   SELECT * FROM gps_data 
+   WHERE device_id = ? 
+   ORDER BY gps_time DESC 
+   LIMIT 1
+
+8.4 Get Route Stops
+   SELECT * FROM bus_stops 
+   WHERE route_id = ? 
+   ORDER BY stop_order ASC
+
+8.5 Get Notifications
+   SELECT * FROM parent_notifications 
+   WHERE parent_id = ? 
+   ORDER BY created_at DESC
+
+8.6 Get Driver Info
+   SELECT d.* 
+   FROM drivers d
+   INNER JOIN bus_routes br ON d.device_id = br.device_id
+   INNER JOIN parents p ON br.id = p.route_id
+   WHERE p.id = ?
+
+================================================================================
+9. SCREEN STRUCTURE
+================================================================================
+
+9.1 Login Screen
+   - Email input
+   - Password input
+   - Login button
+   - Forgot password link (optional)
+
+9.2 Home/Dashboard Screen
+   - Bus live location map
+   - ETA display (large, prominent)
+   - Quick info card (Route name, Bus number, Driver name)
+   - Notifications icon with badge
+
+9.3 Map Screen
+   - Full-screen map
+   - Bus marker (animated)
+   - Route path
+   - Parent's stop marker
+   - Refresh button
+   - Current location button
+
+9.4 Notifications Screen
+   - List of notifications
+   - Unread/Read indicators
+   - Mark all as read button
+   - Pull to refresh
+
+9.5 Profile Screen
+   - Parent name
+   - Student name
+   - Route information
+   - Logout button
+
+================================================================================
+10. REAL-TIME SUBSCRIPTION SETUP
+================================================================================
+
+For live GPS updates, subscribe to gps_data table:
+
+final channel = SupabaseService.client
+  .channel('parent-gps-updates')
+  .onPostgresChanges(
+    event: PostgresChangeEvent.insert,
+    schema: 'public',
+    table: 'gps_data',
+    filter: PostgresChangeFilter(
+      type: PostgresChangeFilterType.eq,
+      column: 'device_id',
+      value: parentDeviceId,
+    ),
+    callback: (payload) {
+      final newGpsData = payload.newRecord;
+      // Update map with new location
+      updateBusLocation(
+        latitude: newGpsData['latitude'],
+        longitude: newGpsData['longitude'],
+        speed: newGpsData['speed'],
+      );
+    },
+  )
+  .subscribe();
+
+Don't forget to unsubscribe:
+await SupabaseService.client.removeChannel(channel);
+
+================================================================================
+11. ETA CALCULATION LOGIC
+================================================================================
+
+double calculateETA({
+  required double busLat,
+  required double busLng,
+  required double stopLat,
+  required double stopLng,
+  required double currentSpeed, // km/h
+}) {
+  // Calculate distance in kilometers
+  double distance = calculateDistance(busLat, busLng, stopLat, stopLng);
+  
+  // Convert speed from km/h to km/min
+  double speedKmPerMin = currentSpeed / 60.0;
+  
+  // Calculate ETA in minutes
+  double etaMinutes = distance / speedKmPerMin;
+  
+  // Add buffer for traffic (20% extra time)
+  etaMinutes = etaMinutes * 1.2;
+  
+  return etaMinutes;
+}
+
+// Haversine formula for distance calculation
+double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+  const double earthRadius = 6371; // km
+  double dLat = _toRadians(lat2 - lat1);
+  double dLon = _toRadians(lon2 - lon1);
+  
+  double a = sin(dLat / 2) * sin(dLat / 2) +
+      cos(_toRadians(lat1)) * cos(_toRadians(lat2)) *
+      sin(dLon / 2) * sin(dLon / 2);
+  
+  double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+  return earthRadius * c;
+}
+
+double _toRadians(double degrees) => degrees * (pi / 180.0);
+
+================================================================================
+12. NOTIFICATION SETUP
+================================================================================
+
+12.1 Local Notifications (Flutter)
+   - Use flutter_local_notifications package
+   - Request notification permissions on app start
+   - Schedule notifications for bus arrival (5 min before ETA)
+
+12.2 Push Notifications (Optional - Future Enhancement)
+   - Use Firebase Cloud Messaging (FCM)
+   - Integrate with Supabase Edge Functions
+   - Send notifications from backend when events occur
+
+================================================================================
+13. SECURITY CONSIDERATIONS
+================================================================================
+
+- Never store Supabase service role key in app
+- Use Supabase Auth for secure authentication (recommended)
+- Hash passwords properly if using custom auth
+- Implement token refresh for sessions
+- Use HTTPS for all API calls
+- Validate all user inputs
+- Implement rate limiting on login attempts
+
+================================================================================
+14. TESTING CHECKLIST
+================================================================================
+
+- [ ] Login with valid credentials
+- [ ] Login with invalid credentials
+- [ ] Real-time GPS updates working
+- [ ] Map displays bus location correctly
+- [ ] ETA calculation accurate
+- [ ] Notifications display correctly
+- [ ] Mark notifications as read
+- [ ] Route information displays
+- [ ] Driver information displays
+- [ ] App works offline (cached data)
+- [ ] Session persistence (auto-login)
+
+================================================================================
+15. BUILD CONFIGURATION FOR APK
+================================================================================
+
+15.1 Android APK Build
+   flutter build apk --release
+   
+   Output: build/app/outputs/flutter-apk/app-release.apk
+
+15.2 Android App Bundle (for Play Store)
+   flutter build appbundle --release
+   
+   Output: build/app/outputs/bundle/release/app-release.aab
+
+15.3 Signing Configuration
+   - Create keystore file
+   - Configure in android/app/build.gradle
+   - Add key.properties file (DO NOT commit to git)
+
+================================================================================
+END OF PARENT APK SETUP GUIDE
+================================================================================

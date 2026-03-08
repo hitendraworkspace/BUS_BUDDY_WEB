@@ -1,0 +1,326 @@
+================================================================================
+          BUS BUDDY - NAVBAR TO SUPABASE TABLE MAPPING
+================================================================================
+
+Generated: February 20, 2026
+Project: Bus Buddy - School Bus Tracking & Fleet Management System
+
+================================================================================
+NAVBAR ITEMS (defined in app/components/Shell.tsx)
+================================================================================
+
+The navigation bar contains 8 main items:
+
+  1. Dashboard     → /dashboard
+  2. Tracking      → /tracking
+  3. Routes        → /routes
+  4. Drivers       → /drivers
+  5. Alerts        → /alerts
+  6. Alarms        → /alarms
+  7. Reports       → /reports
+  8. Stream        → /stream
+
+================================================================================
+SUPABASE TABLES (4 tables total)
+================================================================================
+
+  1. bus_routes
+  2. gps_data
+  3. alarms
+  4. drivers
+
+================================================================================
+DETAILED MAPPING: NAVBAR ITEM → SUPABASE TABLES
+================================================================================
+
+------------------------------------------------------------------------
+1. DASHBOARD (/dashboard)
+   File: app/(app)/dashboard/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - bus_routes  (via getRoutes())
+     - alarms      (via getAlarms(100))
+     - drivers     (via getDrivers())
+
+   What it does:
+     - Fetches all routes to show route statistics (total, active,
+       maintenance, inactive)
+     - Fetches alarms to count total alerts
+     - Fetches drivers for driver count
+     - Shows fleet status, fleet usage, overspeed, idle stats
+     - Displays route cards with status indicators
+
+------------------------------------------------------------------------
+2. TRACKING (/tracking)
+   File: app/(app)/tracking/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - gps_data    (Real-time subscription via Supabase Realtime +
+                    getLatestGps() query)
+     - bus_routes  (via getRoutes() to get device_id)
+
+   What it does:
+     - Subscribes to real-time INSERT events on 'gps_data' table
+       using Supabase Realtime (postgres_changes)
+     - Shows live GPS coordinates, speed, and last update time
+     - Displays an interactive Leaflet map with bus markers
+     - Loads initial GPS data from first route's device_id
+     - Updates map markers in real-time as new GPS data arrives
+
+------------------------------------------------------------------------
+3. ROUTES (/routes)
+   File: app/(app)/routes/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - bus_routes  (Full CRUD: SELECT, INSERT, UPDATE, DELETE)
+                   (via getRoutes(), upsertRoute(), deleteRoute(),
+                    updateRouteStatus())
+     - gps_data    (via getLatestGps() - polls every 10 seconds)
+
+   What it does:
+     - Lists all bus routes with filtering (all/active/maintenance/inactive)
+     - Shows route details: bus number, total stops, estimated time
+     - Shows current GPS location per route (coordinates, speed, last update)
+     - Allows adding new routes (INSERT into bus_routes)
+     - Allows editing existing routes (UPDATE bus_routes)
+     - Allows deleting routes (DELETE from bus_routes)
+     - Allows changing route status (UPDATE bus_routes status field)
+     - Polls GPS data every 10 seconds to update locations
+     - Validates GPS coordinates within India boundaries
+
+------------------------------------------------------------------------
+4. DRIVERS (/drivers)
+   File: app/(app)/drivers/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - drivers     (via getDrivers())
+
+   What it does:
+     - Lists all drivers with their details
+     - Shows driver name, phone, bus number, device ID
+     - Shows licence expiry date with status indicators
+     - Highlights expired licences (red) and expiring soon (orange)
+     - Shows alert banner for drivers with licences expiring within
+       30 days
+
+------------------------------------------------------------------------
+5. ALERTS (/alerts)
+   File: app/(app)/alerts/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - alarms      (via getAlarms(100, null))
+     - drivers     (via getDrivers())
+
+   What it does:
+     - Two tabs: "Alarms" tab and "Drivers" tab
+     - Alarms tab: Shows all alarms with severity levels
+       (critical, high, medium, low)
+     - Alarms tab: Shows alarm type, description, device ID,
+       arm date/time
+     - Drivers tab: Lists drivers with option to "View Alarms"
+       (navigates to /alarms page filtered by driver)
+     - Polls for new alarms every 10 seconds (silent update)
+     - Shows active alarms count and critical alarms count
+
+------------------------------------------------------------------------
+6. ALARMS (/alarms)
+   File: app/(app)/alarms/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - alarms      (via getAlarms(200, deviceId))
+
+   What it does:
+     - Safety Alarms Dashboard with date range filtering
+     - Filter by alarm type: all, phone, fatigue, collision, speeding
+     - Filter by date range: today, week, month, custom range
+     - Shows alarm statistics cards (total, phone, fatigue, camera, speed)
+     - Can filter by specific driver/device via URL query parameters
+       (?driver_name=...&device_id=...)
+     - Export alarms as PDF/TXT report
+     - Shows alarm details: type, description, severity, arm date/time,
+       device ID
+
+------------------------------------------------------------------------
+7. REPORTS (/reports)
+   File: app/(app)/reports/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - bus_routes  (via getRoutes())
+     - drivers     (via getDrivers())
+     - alarms      (via getAlarms(200, null))
+
+   What it does:
+     - Reports & Analytics dashboard
+     - Shows summary cards: total alerts, active routes
+     - Shows driver performance table with: name, phone, licence expiry,
+       status
+     - Date range filtering: today, week, month, custom
+     - Filters alarms by selected date range
+     - Export reports as PDF or CSV
+     - Highlights expired/expiring driver licences
+
+------------------------------------------------------------------------
+8. STREAM (/stream)
+   File: app/(app)/stream/page.tsx
+------------------------------------------------------------------------
+   Supabase Tables Used:
+     - bus_routes  (via getRoutes() - to get device_id for video
+                    streaming)
+
+   What it does:
+     - Live Video Streaming page
+     - Loads routes from Supabase to get device IDs
+     - Uses device_id to construct video stream URLs
+     - Connects to external CMS API (not Supabase) for actual video
+     - Shows route list sidebar for selecting which bus to stream
+     - Iframe-based video player with fallback to direct HTTP stream
+     - No video data is stored in Supabase
+
+================================================================================
+TABLE DETAILS: SUPABASE TABLE SCHEMAS
+================================================================================
+
+------------------------------------------------------------------------
+TABLE 1: bus_routes
+------------------------------------------------------------------------
+  Columns:
+    - id              : number (Primary Key, auto-increment)
+    - route_name      : string
+    - bus_number      : string
+    - start_point     : string
+    - end_point       : string
+    - device_id       : string (links to GPS tracking device)
+    - total_stops     : number
+    - estimated_time  : string (e.g., "30 min")
+    - status          : string ('active' | 'maintenance' | 'inactive')
+    - created_at      : string (timestamp, optional)
+    - updated_at      : string (timestamp, optional)
+
+  Used by: Dashboard, Tracking, Routes, Reports, Stream
+
+  Operations:
+    - SELECT  → getRoutes() - ordered by route_name
+    - INSERT  → upsertRoute() - add new route
+    - UPDATE  → upsertRoute() - edit existing route
+    - UPDATE  → updateRouteStatus() - change status only
+    - DELETE  → deleteRoute() - remove route by id
+
+------------------------------------------------------------------------
+TABLE 2: gps_data
+------------------------------------------------------------------------
+  Columns:
+    - id              : number (Primary Key, optional)
+    - device_id       : string (links to bus_routes.device_id)
+    - latitude        : number
+    - longitude       : number
+    - speed           : number
+    - gps_time        : string (timestamp)
+    - created_at      : string (timestamp, optional)
+
+  Used by: Tracking, Routes
+
+  Operations:
+    - SELECT        → getGpsHistory() - ordered by gps_time DESC
+    - SELECT        → getLatestGps() - latest single record per device
+    - REALTIME      → Supabase Realtime subscription on INSERT events
+                      (used by Tracking page for live updates)
+
+------------------------------------------------------------------------
+TABLE 3: alarms
+------------------------------------------------------------------------
+  Columns:
+    - id              : number (Primary Key)
+    - device_id       : string (links to bus_routes.device_id)
+    - type            : string (e.g., 'phone', 'fatigue', 'collision',
+                        'speeding')
+    - description     : string (optional)
+    - severity        : string (optional, e.g., 'critical', 'high',
+                        'medium', 'low')
+    - status          : string (optional, e.g., 'active')
+    - arm_date        : string (optional, alarm date)
+    - arm_time        : string (optional, alarm time)
+    - created_at      : string (timestamp, optional)
+
+  Used by: Dashboard, Alerts, Alarms, Reports
+
+  Operations:
+    - SELECT  → getAlarms(limit, deviceId) - ordered by created_at DESC
+    - Filterable by device_id (for driver-specific alarms)
+
+------------------------------------------------------------------------
+TABLE 4: drivers
+------------------------------------------------------------------------
+  Columns:
+    - id              : number (Primary Key)
+    - name            : string
+    - phone           : string
+    - licence_expiry  : string (date)
+    - device_id       : string (optional, links to bus_routes.device_id)
+    - status          : string (optional, e.g., 'active', 'inactive')
+    - created_at      : string (timestamp, optional)
+
+  Used by: Dashboard, Drivers, Alerts, Reports
+
+  Operations:
+    - SELECT  → getDrivers() - ordered by licence_expiry
+
+================================================================================
+REVERSE MAPPING: SUPABASE TABLE → NAVBAR ITEMS
+================================================================================
+
+  bus_routes  →  Dashboard, Tracking, Routes, Reports, Stream
+  gps_data    →  Tracking, Routes
+  alarms      →  Dashboard, Alerts, Alarms, Reports
+  drivers     →  Dashboard, Drivers, Alerts, Reports
+
+================================================================================
+SUPABASE CONNECTION DETAILS
+================================================================================
+
+  Configuration File: lib/supabase.ts
+
+  Supabase URL:  https://rhzxckffxryztlluwnlp.supabase.co
+  Auth Settings:
+    - persistSession: false
+    - autoRefreshToken: false
+    - detectSessionInUrl: false
+
+  Helper Functions Defined:
+    - getRoutes()                    → SELECT * FROM bus_routes
+    - getGpsHistory(limit, deviceId) → SELECT * FROM gps_data
+    - getLatestGps(deviceId)         → SELECT * FROM gps_data (latest 1)
+    - getAlarms(limit, deviceId)     → SELECT * FROM alarms
+    - getDrivers()                   → SELECT * FROM drivers
+    - upsertRoute(route)             → INSERT/UPDATE bus_routes
+    - deleteRoute(id)                → DELETE FROM bus_routes
+    - updateRouteStatus(id, status)  → UPDATE bus_routes SET status
+
+================================================================================
+ADDITIONAL PAGES (Not in main navbar)
+================================================================================
+
+  - Login    (/login)    → Uses localStorage for auth (local_auth_user)
+  - Register (/register) → Uses localStorage for auth
+  - Profile  (/profile)  → Accessible from user dropdown menu
+  - Landing  (/)         → Public marketing page, no Supabase tables
+
+================================================================================
+DATA FLOW SUMMARY
+================================================================================
+
+  GPS Devices → External Tracking Server → Python Scripts → Supabase
+                                                              ↓
+                                                        gps_data table
+                                                        alarms table
+                                                              ↓
+                                                     Next.js Web App
+                                                     (reads from Supabase)
+                                                              ↓
+                                                     Dashboard, Tracking,
+                                                     Routes, Drivers,
+                                                     Alerts, Alarms,
+                                                     Reports, Stream
+
+================================================================================
+END OF DOCUMENT
+================================================================================
